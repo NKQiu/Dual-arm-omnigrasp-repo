@@ -90,3 +90,5 @@ RIGHT_ROBOT_CFG = ArticulationCfg(
             damping=350.0,
         ),
     },
+    soft_joint_pos_limit_factor=1.0,
+)
