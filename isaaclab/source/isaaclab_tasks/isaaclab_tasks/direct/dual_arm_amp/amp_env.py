@@ -80,61 +80,32 @@ class AmpMotionImitatorEnv(DirectRLEnv):
         self.left_controller=JointImpedanceController(jp_cfg, num_robots=self.scene.num_envs, dof_pos_limits=self.left_robot.data.soft_joint_pos_limits, device=self.sim.device)
         self.right_controller=JointImpedanceController(jp_cfg, num_robots=self.scene.num_envs, dof_pos_limits=self.right_robot.data.soft_joint_pos_limits, device=self.sim.device)
 
-
         # load expert data
         self.expert_trajectories: list[torch.Tensor] = []
         self.motion_lengths: list[int] = []
-        if not hasattr(self.cfg, "motion_files") or not isinstance(self.cfg.motion_files, list) or not self.cfg.motion_files:
-            raise ValueError("Configuration 'motion_files' must be defined as a non-empty list of .pt file paths.")
 
         print(f"Loading expert trajectories from: {self.cfg.motion_files}") 
-        
-        for pt_file_path_str in self.cfg.motion_files:
-            # Handle potential relative paths from config
-            pt_file_path = os.path.expanduser(pt_file_path_str) # Expand ~ user symbol
-            if not os.path.isabs(pt_file_path):
-                 # Attempt to make path relative to the environment file's directory if not absolute
-                 # This might need adjustment based on your project structure / config file location
-                 env_dir = os.path.dirname(__file__)
-                 potential_path = os.path.join(env_dir, pt_file_path)
-                 if os.path.exists(potential_path):
-                      pt_file_path = potential_path
-                 # else: assume path is correct relative to execution dir or is absolute
 
-            print(f"Attempting to load: {pt_file_path}")
+        for pt_file_path in self.cfg.motion_files:
             try:
-                trajectory_tensor = torch.load(pt_file_path, map_location=self.device)
+                trajectory_tensor = torch.load(os.path.expanduser(pt_file_path), map_location=self.device)
+        
+                if isinstance(trajectory_tensor, torch.Tensor) and trajectory_tensor.ndim == 2 and trajectory_tensor.shape[1] == 28 and len(trajectory_tensor) > 0:
+                    trajectory_tensor = trajectory_tensor.to(dtype=torch.float32)
+                    self.expert_trajectories.append(trajectory_tensor)
+                    self.motion_lengths.append(len(trajectory_tensor))
+            except:
+                pass  
 
-                if not isinstance(trajectory_tensor, torch.Tensor):
-                    print(f"Warning: File {pt_file_path} did not contain a valid PyTorch Tensor, skipping.")
-                    continue
-                if trajectory_tensor.ndim != 2 or trajectory_tensor.shape[1] != 28:
-                    print(f"Warning: Tensor in {pt_file_path} has incorrect shape {trajectory_tensor.shape} (expected [T, 28]), skipping.")
-                    continue
-                if len(trajectory_tensor) == 0:
-                    print(f"Warning: Tensor in {pt_file_path} has length 0, skipping.")
-                    continue
-
-                trajectory_tensor = trajectory_tensor.to(dtype=torch.float32)
-                self.expert_trajectories.append(trajectory_tensor)
-                self.motion_lengths.append(len(trajectory_tensor))
-                print(f"Successfully loaded trajectory: {pt_file_path}, Length: {len(trajectory_tensor)}")
-
-            except FileNotFoundError:
-                print(f"Error: Expert motion file not found at: {pt_file_path}, skipping.")
-            except Exception as e:
-                print(f"Error loading or processing file {pt_file_path}: {e}, skipping.")
-
-        if not self.expert_trajectories:
-            raise ValueError("Failed to load any valid expert motion trajectories. Check 'motion_files' config and file contents.")
+            # print(f"Successfully loaded trajectory: {pt_file_path}, Length: {len(trajectory_tensor)}")
 
         self.num_trajectories = len(self.expert_trajectories)
         self.motion_lengths_tensor = torch.tensor(self.motion_lengths, dtype=torch.long, device=self.device) # Use long for indexing
 
-        # --- Reference State Tracking (Multi-Trajectory) ---
+        # multi-trajectory reference states
         self.current_trajectory_idx = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self.current_frame_idx = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
-        # Buffers for next reference state (for policy obs and task reward)
+        # buffers for next reference state (for policy obs and task reward)
         self.ref_q_next = torch.zeros((self.num_envs, 14), device=self.device)
         self.ref_qd_next = torch.zeros((self.num_envs, 14), device=self.device)       
                        
@@ -142,10 +113,8 @@ class AmpMotionImitatorEnv(DirectRLEnv):
 
         # self.step_numbers= torch.zeros(self.scene.num_envs,device=self.sim.device).unsqueeze(1)
         
-        # MotionLoader
-        # --- AMP ----
 
-        # num_amp_observations，表示历史长度
+        # num_amp_observations: history length
 
         self.single_amp_observation_space = 28   # single step amp observation
         if not hasattr(self.cfg, "num_amp_observations") or self.cfg.num_amp_observations <= 0:
@@ -205,16 +174,12 @@ class AmpMotionImitatorEnv(DirectRLEnv):
         self.right_controller.set_command(q_des_right)
 
         # update reference index and next frame
-
-        # Get lengths of currently active trajectories
         current_lengths = self.motion_lengths_tensor[self.current_trajectory_idx]  # the length of trajector of each env
-        # Advance frame index, looping within the current trajectory
         self.current_frame_idx = torch.remainder(self.current_frame_idx + 1, current_lengths)
 
-        # Fetch the next reference q and qd using the updated indices
-        # (Using a loop for clarity when indexing into a list of tensors)
+        # fetch the next reference q and qd using the updated indices
         for i in range(self.num_envs):
-            traj_idx = self.current_trajectory_idx[i].item() # Use .item() for indexing Python list
+            traj_idx = self.current_trajectory_idx[i].item() 
             frame_idx = self.current_frame_idx[i].item()
             self.ref_q_next[i] = self.expert_trajectories[traj_idx][frame_idx, :14]
             self.ref_qd_next[i] = self.expert_trajectories[traj_idx][frame_idx, 14:]
@@ -243,7 +208,7 @@ class AmpMotionImitatorEnv(DirectRLEnv):
 
         self._update_internal_joint_states()
 
-        # --- policy obs ---
+        # policy obs 
         # s_t^p
         q = self.joint_pos
         qd = self.joint_vel
@@ -265,7 +230,7 @@ class AmpMotionImitatorEnv(DirectRLEnv):
         ], dim=-1)  
         observations = {"policy": obs}
 
-        # --- amp obs ---
+        # amp obs 
         amp_obs_step = torch.cat([q, qd], dim=-1)
         # update AMP observation history
         self.amp_observation_buffer[:, 1:] = self.amp_observation_buffer[:, :-1].clone()
@@ -311,19 +276,18 @@ class AmpMotionImitatorEnv(DirectRLEnv):
             env_ids = self.left_robot._ALL_INDICES
         num_resets = len(env_ids)
         # reset state to expert trajectory 
-        # Randomly select a trajectory for each reset env
+        # randomly select a trajectory for each reset env
         reset_trajectory_ids = torch.randint(0, self.num_trajectories, (num_resets,), device=self.device)
         self.current_trajectory_idx[env_ids] = reset_trajectory_ids
 
-        # Randomly select a starting frame within the chosen trajectory
+        # randomly select a starting frame within the chosen trajectory
         selected_lengths = self.motion_lengths_tensor[reset_trajectory_ids]
-        # Ensure we don't sample from length 0 trajectories if they exist
+        
         valid_lengths = torch.clamp(selected_lengths, min=1)
         reset_frame_ids = (torch.rand(num_resets, device=self.device) * valid_lengths).long() # Sample in [0, L-1]
         self.current_frame_idx[env_ids] = reset_frame_ids
 
-        # Fetch initial state (q, qd) from the sampled expert state
-        # (Using loop for clarity with list of tensors)
+        # fetch initial state (q, qd) from the sampled expert state
         initial_q = torch.zeros((num_resets, 14), device=self.device)
         initial_qd = torch.zeros((num_resets, 14), device=self.device)
         for i in range(num_resets):
@@ -331,16 +295,16 @@ class AmpMotionImitatorEnv(DirectRLEnv):
             frame_idx = reset_frame_ids[i].item()
             initial_q[i] = self.expert_trajectories[traj_idx][frame_idx, :14]
             initial_qd[i] = self.expert_trajectories[traj_idx][frame_idx, 14:]
-        # later can add noise to initial state here if needed
+        #  add noise 
 
-        # Write initial state to simulation
+        # write initial state to simulation
         self.left_robot.write_joint_state_to_sim(initial_q[:, :7], initial_qd[:, :7], None, env_ids)
         self.right_robot.write_joint_state_to_sim(initial_q[:, 7:], initial_qd[:, 7:], None, env_ids)
         # Update internal state buffers
         self.joint_pos[env_ids] = initial_q
         self.joint_vel[env_ids] = initial_qd
 
-        # Set the *next* reference frame for the first observation calculation
+        # set the next reference frame for the first observation calculation
         next_frame_ids = torch.remainder(reset_frame_ids + 1, selected_lengths)
         for i in range(num_resets):
             # Need env_id corresponding to loop index i
@@ -351,35 +315,26 @@ class AmpMotionImitatorEnv(DirectRLEnv):
             self.ref_qd_next[current_env_id] = self.expert_trajectories[traj_idx][frame_idx, 14:]
 
         # initialize AMP observation buffer 
-        # Collect reference history corresponding to the reset state
+
+        # collect reference history corresponding to the reset state
         initial_amp_history = self.collect_reference_motions(num_resets, reset_trajectory_ids, reset_frame_ids)
-        # Fill the buffer for the reset environments
+        # fill the buffer for the reset environments
         self.amp_observation_buffer[env_ids] = initial_amp_history.view(
             num_resets, self.cfg.num_amp_observations, self.single_amp_observation_space
         )
   
-        # Call parent reset AFTER setting states and buffers
+        # after setting states and buffers
         super()._reset_idx(env_ids)  
     
     def collect_reference_motions(self, num_samples: int,
                                 trajectory_indices: torch.Tensor | None = None,
                                 current_frame_indices: torch.Tensor | None = None) -> torch.Tensor:
-        """
 
-        Args:
-            num_samples: Number of sequences to generate.
-            trajectory_indices: Trajectory index for each sample (shape: [num_samples]). Random if None.
-            current_frame_indices: Starting frame index within trajectory for each sample (shape: [num_samples]). Random if None.
-
-        Returns:
-            Tensor containing reference sequences, shape (num_samples, self.amp_observation_size).
-        """
-        # --- Input Validation and Default Sampling ---
         if trajectory_indices is None:
             trajectory_indices = torch.randint(0, self.num_trajectories, (num_samples,), device=self.device)
         if current_frame_indices is None:
             selected_lengths = self.motion_lengths_tensor[trajectory_indices]
-            valid_lengths = torch.clamp(selected_lengths, min=1) # Avoid division by zero or modulo zero
+            valid_lengths = torch.clamp(selected_lengths, min=1) 
             current_frame_indices = (torch.rand(num_samples, device=self.device) * valid_lengths).long()
 
         if trajectory_indices.shape != (num_samples,) or current_frame_indices.shape != (num_samples,):
@@ -387,14 +342,12 @@ class AmpMotionImitatorEnv(DirectRLEnv):
 
         # Sequence of steps back in time: [0, 1, ..., N-1] where N = num_amp_observations
         time_steps = torch.arange(self.cfg.num_amp_observations, device=self.device)
-        # Calculate indices relative to the current frame: [current, current-1, ..., current-N+1]
-        # Shape: [num_samples, num_amp_observations]
-        relative_indices = current_frame_indices.unsqueeze(1) - time_steps.unsqueeze(0)
-        # Clamp indices to be non-negative (cannot sample before trajectory start)
+        # Calculate indices relative to the current frame
+        relative_indices = current_frame_indices.unsqueeze(1) - time_steps.unsqueeze(0) # shape: [num_samples, num_amp_observations]
+        # Clamp indices to be non-negative (not sample before trajectory start)
         history_indices = torch.clamp(relative_indices, min=0)
 
-        # Vectorizing sampling from a list of tensors with varying indices is complex.
-        # A loop is clearer and often acceptable unless this becomes a major bottleneck.
+
         all_sequences = []
         for i in range(num_samples):
             traj_idx = trajectory_indices[i].item()
@@ -407,11 +360,10 @@ class AmpMotionImitatorEnv(DirectRLEnv):
 
         # Stack sequences from all samples
         # amp_obs_sequences shape: [num_samples, num_amp_observations, 28]
-        if not all_sequences: # Handle edge case if num_samples was 0
+        if not all_sequences: 
              return torch.empty((0, self.amp_observation_size), device=self.device)
         amp_obs_sequences = torch.stack(all_sequences, dim=0)
 
-        # Flatten the history dimension to match discriminator input requirement
         # final_output shape: [num_samples, num_amp_observations * 28]
         final_output = amp_obs_sequences.view(num_samples, -1)
  
