@@ -103,11 +103,11 @@ class AmpMotionImitatorEnv(DirectRLEnv):
         self.motion_lengths_tensor = torch.tensor(self.motion_lengths, dtype=torch.long, device=self.device) # Use long for indexing
 
         # multi-trajectory reference states
-        self.current_trajectory_idx = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
-        self.current_frame_idx = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self.current_trajectory_idx = torch.zeros(self.scene.num_envs, dtype=torch.long, device=self.device)
+        self.current_frame_idx = torch.zeros(self.scene.num_envs, dtype=torch.long, device=self.device)
         # buffers for next reference state (for policy obs and task reward)
-        self.ref_q_next = torch.zeros((self.num_envs, 14), device=self.device)
-        self.ref_qd_next = torch.zeros((self.num_envs, 14), device=self.device)       
+        self.ref_q_next = torch.zeros((self.scene.num_envs, 14), device=self.device)
+        self.ref_qd_next = torch.zeros((self.scene.num_envs, 14), device=self.device)       
                        
      
 
@@ -126,7 +126,7 @@ class AmpMotionImitatorEnv(DirectRLEnv):
         self.amp_observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(self.amp_observation_size,))
         # amp buffer to store history
         self.amp_observation_buffer = torch.zeros(
-            (self.num_envs, self.cfg.num_amp_observations, self.single_amp_observation_space), device=self.device
+            (self.scene.num_envs, self.cfg.num_amp_observations, self.single_amp_observation_space), device=self.device
         )       
         self.extras = {}
         
@@ -178,7 +178,7 @@ class AmpMotionImitatorEnv(DirectRLEnv):
         self.current_frame_idx = torch.remainder(self.current_frame_idx + 1, current_lengths)
 
         # fetch the next reference q and qd using the updated indices
-        for i in range(self.num_envs):
+        for i in range(self.scene.num_envs):
             traj_idx = self.current_trajectory_idx[i].item() 
             frame_idx = self.current_frame_idx[i].item()
             self.ref_q_next[i] = self.expert_trajectories[traj_idx][frame_idx, :14]
@@ -237,7 +237,7 @@ class AmpMotionImitatorEnv(DirectRLEnv):
         # build AMP observation
         self.amp_observation_buffer[:, 0] = amp_obs_step
 
-        self.extras["amp_obs"] = self.amp_observation_buffer.view(self.num_envs, -1)  #
+        self.extras["amp_obs"] = self.amp_observation_buffer.view(self.scene.num_envs, -1)  #
 
         return observations
 
