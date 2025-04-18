@@ -11,6 +11,7 @@ a more user-friendly way.
 """
 
 """Launch Isaac Sim Simulator first."""
+import gymnasium as gym
 
 import argparse
 import sys
@@ -61,7 +62,10 @@ simulation_app = app_launcher.app
 
 """Rest everything follows."""
 
-import gymnasium as gym
+
+import dual_arm_amp 
+
+
 import os
 import random
 from datetime import datetime
@@ -92,11 +96,14 @@ from isaaclab.envs import (
     ManagerBasedRLEnvCfg,
     multi_agent_to_single_agent,
 )
+
 from isaaclab.utils.assets import retrieve_file_path
 from isaaclab.utils.dict import print_dict
 from isaaclab.utils.io import dump_pickle, dump_yaml
 
+
 import isaaclab_tasks  # noqa: F401
+
 from isaaclab_tasks.utils.hydra import hydra_task_config
 
 # config shortcuts
